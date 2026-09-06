@@ -25,6 +25,11 @@ type CfRule = {
     applyToSubstrings?: boolean;
 };
 
+function substringGroupStyle(rules: CfRule[]): CSSProperties {
+    const apply = resolveSubstringAppearance as unknown as (appearance: object, extra: unknown) => CSSProperties;
+    return apply({}, rules) ?? {};
+}
+
 type SortDirection = 'ASC' | 'DESC';
 
 interface SortRule {
@@ -445,7 +450,7 @@ function flattenRows(
                     kind: 'group',
                     depth,
                     cells: [],
-                    groupField: item.groupField,
+                    groupField: typeof item.groupField === 'string' ? item.groupField : undefined,
                     groupValue: item.groupValue,
                     groupKey,
                     leafCount: countLeaves(item),
@@ -868,9 +873,12 @@ export class DataTable extends Component<IReactWindowWrapperCombined, DataTableS
         const enabledSort = sortRules.filter((rule) => rule.enabled);
         const sortState = new Map(enabledSort.map((rule, index) => [rule.field, { direction: rule.direction, index, count: enabledSort.length }]));
 
+        const drag = this.state.drag;
+        const rowDrag = drag?.kind === 'row' ? drag : null;
+        const colDrag = drag?.kind === 'col' ? drag : null;
         let leaves = built.leaves;
-        if (this.state.drag?.kind === 'col') {
-            leaves = moveLeavesByRoot(leaves, this.state.drag.fromRootId, this.state.drag.overRootId);
+        if (colDrag) {
+            leaves = moveLeavesByRoot(leaves, colDrag.fromRootId, colDrag.overRootId);
         }
         const bodyWidth = Math.max(0, this.state.viewportWidth - treeWidth);
         const colWidths = allocateColumnWidths(leaves, bodyWidth, this.state.widthOverrides);
@@ -879,23 +887,20 @@ export class DataTable extends Component<IReactWindowWrapperCombined, DataTableS
         const titles = bandTitleByRoot(columns);
 
         const rows = flattenRows(data, this.state.expandedGroups, rules);
-        const paintedRows =
-            this.state.drag?.kind === 'row' ? moveRow(rows, this.state.drag.fromId, this.state.drag.overId) : rows;
+        const paintedRows = rowDrag ? moveRow(rows, rowDrag.fromId, rowDrag.overId) : rows;
         const heights = paintedRows.map((row) => (row.kind === 'group' ? 42 : leafHeight));
         const geometry = buildRowGeometry(heights);
         const range = firstAndLastRowsToRender(geometry.rows, this.state.scrollTop, this.state.viewportHeight, leafHeight);
         const visible = paintedRows.slice(Math.max(0, range.first), range.last + 1);
-        const dropTop =
-            this.state.drag?.kind === 'row'
-                ? geometry.rows[paintedRows.findIndex((row) => row.id === this.state.drag?.overId)]?.top
-                : undefined;
+        const dropOverIndex = rowDrag ? paintedRows.findIndex((row) => row.id === rowDrag.overId) : -1;
+        const dropTop = dropOverIndex >= 0 ? geometry.rows[dropOverIndex]?.top : undefined;
 
         const className = [
             'data-table',
             'is-row-animation',
             this.state.afterCreated ? 'is-after-created' : '',
-            this.state.scrolling && !this.state.drag ? 'is-prevent-animation' : '',
-            this.state.drag?.kind === 'col' ? 'is-column-moving' : '',
+            this.state.scrolling && !drag ? 'is-prevent-animation' : '',
+            colDrag ? 'is-column-moving' : '',
         ]
             .filter(Boolean)
             .join(' ');
@@ -962,8 +967,8 @@ export class DataTable extends Component<IReactWindowWrapperCombined, DataTableS
                                 if (!geo) {
                                     return null;
                                 }
-                                const dragging = this.state.drag?.kind === 'row' && this.state.drag.fromId === row.id;
-                                const groupStyle = row.substringHit ? resolveSubstringAppearance({}) : {};
+                                const dragging = Boolean(rowDrag && rowDrag.fromId === row.id);
+                                const groupStyle = row.substringHit ? substringGroupStyle(rules) : {};
                                 return (
                                     <div
                                         key={row.id}

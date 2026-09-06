@@ -110,26 +110,29 @@ function isVerticalGroup(col: GroupedColumn): boolean {
     return Array.isArray(col) && (col as GroupedColumn[] & { orientation?: string }).orientation === 'vertical';
 }
 
+function flattenCellList(item: ICell | ICell[]): ICell[] {
+    if (Array.isArray(item)) {
+        return item.flatMap((child) => flattenCellList(child as ICell | ICell[]));
+    }
+    return item ? [item] : [];
+}
+
 function getLeafCells(item: ICell | ICell[] | ITreeRow | Record<string, unknown>[]): ICell[] | null {
+    if (isTreeRow(item)) {
+        if (item.isGroup) {
+            return null;
+        }
+        return normalizeCells(item.cells);
+    }
     if (Array.isArray(item)) {
         if (item.length === 0) {
             return [];
         }
-        if (item[0] && typeof item[0] === 'object' && 'columnName' in (item[0] as object)) {
-            const flat: ICell[] = [];
-            for (const el of item) {
-                if (Array.isArray(el)) {
-                    flat.push(...(el as ICell[]));
-                } else {
-                    flat.push(el as ICell);
-                }
-            }
-            return flat;
+        const first = item[0] as { columnName?: unknown; cells?: unknown };
+        if (first && typeof first === 'object' && 'columnName' in first) {
+            return flattenCellList(item as ICell | ICell[]);
         }
         return null;
-    }
-    if (isTreeRow(item) && item.isGroup) {
-        return normalizeCells(item.cells);
     }
     return null;
 }

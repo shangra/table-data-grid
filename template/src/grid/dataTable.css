@@ -1,0 +1,275 @@
+.dt {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    min-height: 0;
+    background: #181d1f;
+    color: #fff;
+    font-family: system-ui, sans-serif;
+    font-size: 13px;
+}
+
+.dt-header {
+    flex: 0 0 auto;
+    overflow: hidden;
+    z-index: 5;
+    border-bottom: 1px solid #68686e26;
+}
+
+.dt-scroll {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+}
+
+.dt-header-row {
+    position: relative;
+    height: 36px;
+    background: #222628;
+}
+
+.dt-hcell {
+    position: absolute;
+    top: 0;
+    height: 100%;
+    box-sizing: border-box;
+    padding: 8px 18px 8px 12px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-weight: 600;
+    border-right: 1px solid #68686e26;
+    white-space: nowrap;
+    overflow: hidden;
+    cursor: grab;
+    touch-action: none;
+}
+
+.dt-hlabel {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.dt-sort {
+    display: inline-flex;
+    flex: 0 0 auto;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0;
+    margin-left: auto;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: #8b97ab;
+    cursor: pointer;
+    line-height: 1;
+}
+
+.dt-sort-arrow {
+    font-size: 8px;
+    opacity: 0.35;
+}
+
+.dt-sort-arrow.is-active {
+    opacity: 1;
+    color: #7eb0ff;
+}
+
+.dt-hcell.is-sorted .dt-hlabel {
+    color: #d7e6ff;
+}
+
+.dt-sort-index {
+    font-size: 9px;
+    font-weight: 700;
+    color: #7eb0ff;
+    line-height: 1;
+}
+
+.dt-column-moving .dt-hcell,
+.dt-column-moving .dt-cell {
+    transition: left 0.2s;
+}
+
+.dt-column-moving .dt-hband {
+    transition:
+        left 0.2s,
+        width 0.2s;
+}
+
+.dt-column-moving .is-col-dragging {
+    transition: none !important;
+    opacity: 0.45;
+}
+
+.dt-hcell.is-drop {
+    box-shadow: inset 0 -2px 0 #3b6ae0;
+}
+
+.dt-resize {
+    position: absolute;
+    top: 0;
+    right: -3px;
+    z-index: 2;
+    width: 8px;
+    height: 100%;
+    cursor: col-resize;
+}
+
+.dt-resize::after {
+    content: '';
+    position: absolute;
+    top: 25%;
+    left: 3px;
+    width: 2px;
+    height: 50%;
+    border-radius: 1px;
+    background: #68686e80;
+}
+
+.dt-hband {
+    border-bottom: 1px solid #68686e26;
+    text-align: center;
+}
+
+.dt-body {
+    position: relative;
+}
+
+.dt-row {
+    position: absolute;
+    left: 0;
+    top: 0;
+    border-bottom: 1px solid #68686e26;
+    box-sizing: border-box;
+    background: #181d1f;
+    will-change: transform;
+}
+
+.dt-row-animation .dt-row {
+    transition:
+        transform 0.4s,
+        top 0.4s,
+        opacity 0.2s;
+}
+
+.dt-row-animation.dt-after-created .dt-row {
+    transition:
+        transform 0.4s,
+        top 0.4s,
+        height 0.4s,
+        opacity 0.2s;
+}
+
+.dt-prevent-animation .dt-row {
+    transition: none !important;
+}
+
+.dt-row.is-dragging {
+    opacity: 0.45;
+}
+
+.dt-drop-line {
+    position: absolute;
+    left: 0;
+    right: 0;
+    z-index: 8;
+    height: 2px;
+    background: #2196f3;
+    pointer-events: none;
+}
+
+.dt-ghost {
+    position: fixed;
+    z-index: 20;
+    pointer-events: none;
+    padding: 6px 10px;
+    border-radius: 4px;
+    background: #222628;
+    border: 1px solid #68686e80;
+    box-shadow: 0 8px 24px #00000080;
+    font-size: 13px;
+    transform: translateY(8px);
+}
+
+.dt-row-drag {
+    display: inline-flex;
+    flex: 0 0 22px;
+    width: 22px;
+    height: 22px;
+    align-items: center;
+    justify-content: center;
+    margin-right: 8px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: #8b97ab;
+    cursor: grab;
+    touch-action: none;
+}
+
+.dt-row-drag:active {
+    cursor: grabbing;
+}
+
+.dt-row:hover {
+    background: #222628;
+}
+
+.dt-row:hover .dt-pinned {
+    background: #222628;
+}
+
+.dt-cell {
+    position: absolute;
+    top: 0;
+    height: 100%;
+    box-sizing: border-box;
+    padding: 0 12px;
+    display: flex;
+    align-items: center;
+    overflow: hidden;
+    border-right: 1px solid #68686e26;
+    min-width: 0;
+}
+
+.dt-pinned {
+    position: sticky;
+    left: 0;
+    z-index: 2;
+    background: #181d1f;
+}
+
+.dt-header .dt-pinned {
+    z-index: 6;
+    background: #222628;
+}
+
+.dt-row.is-group-row {
+    background: #1b2738;
+    cursor: pointer;
+    font-weight: 500;
+}
+
+.dt-row.is-group-row .dt-pinned {
+    background: #1b2738;
+}
+
+.dt-value {
+    width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.dt-input {
+    width: 100%;
+    border: 1px solid #3b6ae0;
+    border-radius: 4px;
+    background: #0f141c;
+    color: inherit;
+    font: inherit;
+    padding: 2px 6px;
+}

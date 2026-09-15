@@ -371,3 +371,93 @@
     font-size: 12px;
     color: var(--color-text-header);
 }
+
+.data-table__toolbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: 0 0 auto;
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--color-border);
+    background: var(--color-item);
+    font-size: 12px;
+}
+
+.data-table__toolbar button,
+.data-table__menu button,
+.data-table__menu select,
+.data-table__menu input,
+.data-table__edit {
+    font: inherit;
+    color: var(--color-text);
+    background: var(--color-bg-window);
+    border: 1px solid var(--color-border);
+    border-radius: 4px;
+    padding: 4px 8px;
+}
+
+.data-table__check {
+    flex: 0 0 16px;
+    width: 16px;
+    height: 16px;
+    margin-right: 8px;
+    accent-color: var(--color-accent);
+}
+
+.data-table__filter-btn {
+    flex: 0 0 auto;
+    border: 0;
+    background: transparent;
+    color: var(--color-muted);
+    cursor: pointer;
+    padding: 0 2px;
+}
+
+.data-table__filter-btn.is-on {
+    color: var(--color-accent);
+}
+
+.data-table__row.is-selected,
+.data-table__row.is-selected .data-table__pinned {
+    background: var(--color-item-active);
+}
+
+.data-table__menu {
+    position: fixed;
+    z-index: 30;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 160px;
+    padding: 8px;
+    background: var(--color-item);
+    border: 1px solid var(--color-border);
+    border-radius: 6px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+}
+
+.data-table__menu-title {
+    font-size: 11px;
+    color: var(--color-muted);
+    text-transform: uppercase;
+}
+
+.data-table__menu button {
+    text-align: left;
+    cursor: pointer;
+}
+
+.data-table__edit {
+    width: 100%;
+}
+
+.data-table__more {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    padding: 8px;
+    text-align: center;
+    color: var(--color-muted);
+    font-size: 12px;
+}

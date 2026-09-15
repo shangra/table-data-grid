@@ -1,4 +1,4 @@
-import { Component, createRef, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
+import { Component, createRef, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import './DataTable.css';
 import { isTreeRow, normalizeCells } from '../../groupTableRows';
 import { ICell } from '../../types';
@@ -38,6 +38,13 @@ interface SortRule {
     enabled: boolean;
 }
 
+type FilterComparison = 'contains' | 'eq' | 'empty' | 'filled';
+
+interface ColumnFilter {
+    comparison: FilterComparison;
+    value: string;
+}
+
 interface ExtraTableProps {
     onSort?: (payload: { column: string; direction: SortDirection | null }) => void;
     onSortRulesChange?: (rules: SortRule[]) => void;
@@ -45,6 +52,14 @@ interface ExtraTableProps {
     onColumnResize?: (columnName: string, width: number) => void;
     onRowMove?: (fromId: string, toId: string) => void;
     onCellChange?: (rowId: string, field: string, value: string) => void;
+    onSelectionChange?: (ids: string[]) => void;
+    onDeleteRows?: (ids: string[]) => void;
+    onCopyRows?: (ids: string[]) => void;
+    onEditRow?: (rowId: string, field?: string) => void;
+    onColumnFilterChange?: (filters: Record<string, ColumnFilter>) => void;
+    onLoadMore?: () => void;
+    hasMore?: boolean;
+    loadingMore?: boolean;
 }
 
 interface LeafTrack {
@@ -71,6 +86,19 @@ interface DisplayRow {
     substringHit?: boolean;
 }
 
+interface FilterMenuState {
+    field: string;
+    left: number;
+    top: number;
+}
+
+interface ContextMenuState {
+    rowId: string;
+    field?: string;
+    x: number;
+    y: number;
+}
+
 interface RowGeometry {
     top: number;
     height: number;
@@ -91,10 +119,17 @@ interface DataTableState {
     drag: DragState | null;
     widthOverrides: Record<string, number>;
     rootOrder: string[] | null;
+    selectedIds: Set<string>;
+    columnFilters: Record<string, ColumnFilter>;
+    filterMenu: FilterMenuState | null;
+    contextMenu: ContextMenuState | null;
+    editing: { rowId: string; field: string } | null;
 }
 
 const ROW_BUFFER = 10;
 const DRAG_START_PIXELS = 4;
+const CHECK_WIDTH = 28;
+const LOAD_MORE_PX = 96;
 
 function formatCellValue(value: unknown): string {
     if (value === null || value === undefined) {
@@ -357,6 +392,67 @@ function rowDataFromCells(cells: ICell[]): Record<string, unknown> {
     return rowData;
 }
 
+function rawCellText(row: DisplayRow, field: string): string {
+    const cell = row.cells.find((item) => item.columnName === field);
+    return formatCellValue(cell?.value.viewedData ?? cell?.value.originalData);
+}
+
+function leafMatchesFilters(row: DisplayRow, filters: Record<string, ColumnFilter>): boolean {
+    const entries = Object.entries(filters);
+    if (entries.length === 0) {
+        return true;
+    }
+    return entries.every(([field, filter]) => {
+        const text = rawCellText(row, field).toLowerCase();
+        if (filter.comparison === 'empty') {
+            return text === '';
+        }
+        if (filter.comparison === 'filled') {
+            return text !== '';
+        }
+        const needle = filter.value.trim().toLowerCase();
+        if (!needle) {
+            return true;
+        }
+        if (filter.comparison === 'eq') {
+            return text === needle;
+        }
+        return text.includes(needle);
+    });
+}
+
+function applyColumnFilters(rows: DisplayRow[], filters: Record<string, ColumnFilter>): DisplayRow[] {
+    const active = Object.fromEntries(
+        Object.entries(filters).filter(([, filter]) => filter.comparison === 'empty' || filter.comparison === 'filled' || filter.value.trim() !== '')
+    );
+    if (Object.keys(active).length === 0) {
+        return rows;
+    }
+    const keep = new Set<string>();
+    for (let index = rows.length - 1; index >= 0; index--) {
+        const row = rows[index];
+        if (row.kind === 'leaf') {
+            if (leafMatchesFilters(row, active)) {
+                keep.add(row.id);
+            }
+            continue;
+        }
+        let child = index + 1;
+        let any = false;
+        while (child < rows.length && rows[child].depth > row.depth) {
+            if (keep.has(rows[child].id)) {
+                any = true;
+                break;
+            }
+            child += 1;
+        }
+        if (any) {
+            keep.add(row.id);
+        }
+    }
+    return rows.filter((row) => keep.has(row.id));
+}
+
 function collectAncestorGroupKeys(
     children: (ICell | ICell[] | ITreeRow | Record<string, unknown>[])[],
     rules: CfRule[],
@@ -600,6 +696,10 @@ export class DataTable extends Component<IReactWindowWrapperCombined, DataTableS
     private scrollTimer = 0;
     private frame = 0;
 
+    private loadMoreLock = false;
+    private pendingScroll: { rowId: string; field?: string } | null = null;
+    private dataLength = 0;
+
     constructor(props: IReactWindowWrapperCombined) {
         super(props);
         this.state = {
@@ -613,6 +713,11 @@ export class DataTable extends Component<IReactWindowWrapperCombined, DataTableS
             drag: null,
             widthOverrides: {},
             rootOrder: null,
+            selectedIds: new Set(),
+            columnFilters: {},
+            filterMenu: null,
+            contextMenu: null,
+            editing: null,
         };
         subscribeListSettingsRevision(DataTable.SUBSCRIBER, () => {
             this.setState({ listSettingsRevision: getListSettingsRevision() });
@@ -642,6 +747,7 @@ export class DataTable extends Component<IReactWindowWrapperCombined, DataTableS
                     this.headerRef.current.scrollLeft = scroller.scrollLeft;
                 }
                 this.setState({ scrollTop: scroller.scrollTop });
+                this.maybeLoadMore(scroller);
             });
         };
         el.addEventListener('scroll', onScroll, { passive: true });
@@ -651,6 +757,20 @@ export class DataTable extends Component<IReactWindowWrapperCombined, DataTableS
         this.resizeObserver.observe(el);
         this.setState({ viewportHeight: el.clientHeight, viewportWidth: el.clientWidth });
         (this as unknown as { _onScroll: () => void })._onScroll = onScroll;
+        document.addEventListener('mousedown', this.closePopups);
+    }
+
+    componentDidUpdate(): void {
+        const { data } = this.tableModel();
+        if (data.length !== this.dataLength) {
+            this.dataLength = data.length;
+            this.loadMoreLock = false;
+        }
+        if (this.pendingScroll) {
+            const next = this.pendingScroll;
+            this.pendingScroll = null;
+            this.applyScrollToCell(next.rowId, next.field);
+        }
     }
 
     componentWillUnmount(): void {
@@ -666,11 +786,181 @@ export class DataTable extends Component<IReactWindowWrapperCombined, DataTableS
             el.removeEventListener('scroll', onScroll);
         }
         this.resizeObserver?.disconnect();
+        document.removeEventListener('mousedown', this.closePopups);
     }
 
     extra(): ExtraTableProps {
         return this.props as IReactWindowWrapperCombined & ExtraTableProps;
     }
+
+    closePopups = (event: MouseEvent) => {
+        const target = event.target as HTMLElement | null;
+        if (target?.closest('.data-table__menu') || target?.closest('.data-table__filter-btn')) {
+            return;
+        }
+        if (this.state.filterMenu || this.state.contextMenu) {
+            this.setState({ filterMenu: null, contextMenu: null });
+        }
+    };
+
+    maybeLoadMore = (scroller: HTMLDivElement) => {
+        const extra = this.extra();
+        if (!extra.onLoadMore || extra.hasMore === false || extra.loadingMore || this.loadMoreLock) {
+            return;
+        }
+        if (scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - LOAD_MORE_PX) {
+            this.loadMoreLock = true;
+            extra.onLoadMore();
+            window.setTimeout(() => {
+                this.loadMoreLock = false;
+            }, 500);
+        }
+    };
+
+    scrollToCell = (rowId: string, field?: string) => {
+        this.pendingScroll = { rowId, field };
+        this.setState({ expandedGroups: 'all', contextMenu: null });
+    };
+
+    scrollToRow = (rowId: string) => {
+        this.scrollToCell(rowId);
+    };
+
+    applyScrollToCell = (rowId: string, field?: string) => {
+        const scroller = this.scrollerRef.current;
+        if (!scroller) {
+            return;
+        }
+        const { data, columns } = this.tableModel();
+        const rules = (getConditionalFormattingSettingsState().conditionalFormattingRules ?? []) as CfRule[];
+        const grouping = data.length > 0 && isTreeRow(data[0]) && Boolean((data[0] as ITreeRow).isGroup);
+        const treeWidth = (grouping ? 260 : 32) + CHECK_WIDTH;
+        const leafHeight = Math.max(36, getConfigCellHeight(columns));
+        const rows = applyColumnFilters(flattenRows(data, 'all', rules), this.state.columnFilters);
+        const index = rows.findIndex((row) => row.id === rowId);
+        if (index < 0) {
+            return;
+        }
+        const heights = rows.map((row) => (row.kind === 'group' ? 42 : leafHeight));
+        const geometry = buildRowGeometry(heights);
+        const top = geometry.rows[index]?.top ?? 0;
+        const rowH = geometry.rows[index]?.height ?? leafHeight;
+        const maxTop = Math.max(0, top - Math.max(0, (scroller.clientHeight - rowH) / 2));
+        scroller.scrollTop = maxTop;
+        if (field) {
+            const leaves = buildLeaves(columns).leaves;
+            const leafIndex = leaves.findIndex((leaf) => leaf.field === field || leaf.stackLeaves?.some((item) => item.name === field));
+            if (leafIndex >= 0) {
+                const widths = allocateColumnWidths(leaves, Math.max(0, scroller.clientWidth - treeWidth), this.state.widthOverrides);
+                scroller.scrollLeft = prefixOffsets(widths)[leafIndex] ?? 0;
+            }
+        }
+        this.setState({ scrollTop: scroller.scrollTop });
+    };
+
+    emitSelection = (selectedIds: Set<string>) => {
+        this.extra().onSelectionChange?.([...selectedIds]);
+    };
+
+    toggleRowSelected = (rowId: string, event?: { stopPropagation: () => void }) => {
+        event?.stopPropagation();
+        this.setState((prev) => {
+            const selectedIds = new Set(prev.selectedIds);
+            if (selectedIds.has(rowId)) {
+                selectedIds.delete(rowId);
+            } else {
+                selectedIds.add(rowId);
+            }
+            this.emitSelection(selectedIds);
+            return { selectedIds };
+        });
+    };
+
+    toggleSelectAll = (leafIds: string[]) => {
+        this.setState((prev) => {
+            const allOn = leafIds.length > 0 && leafIds.every((id) => prev.selectedIds.has(id));
+            const selectedIds = allOn ? new Set<string>() : new Set(leafIds);
+            this.emitSelection(selectedIds);
+            return { selectedIds };
+        });
+    };
+
+    selectedLeafRows = (rows: DisplayRow[]) => rows.filter((row) => row.kind === 'leaf' && this.state.selectedIds.has(row.id));
+
+    copyRows = (ids: string[], rows: DisplayRow[]) => {
+        if (ids.length === 0) {
+            return;
+        }
+        this.extra().onCopyRows?.(ids);
+        const lines = ids.map((id) => {
+            const row = rows.find((item) => item.id === id);
+            if (!row) {
+                return '';
+            }
+            return row.cells.map((cell) => formatCellValue(cell.value.viewedData ?? cell.value.originalData)).join('\t');
+        });
+        void navigator.clipboard?.writeText(lines.join('\n'));
+        this.setState({ contextMenu: null });
+    };
+
+    deleteRows = (ids: string[]) => {
+        if (ids.length === 0) {
+            return;
+        }
+        this.extra().onDeleteRows?.(ids);
+        this.setState((prev) => {
+            const selectedIds = new Set(prev.selectedIds);
+            ids.forEach((id) => selectedIds.delete(id));
+            return { selectedIds, contextMenu: null };
+        });
+    };
+
+    startEdit = (rowId: string, field?: string) => {
+        const nextField = field ?? 'name';
+        this.extra().onEditRow?.(rowId, nextField);
+        this.setState({ editing: { rowId, field: nextField }, contextMenu: null });
+    };
+
+    commitEdit = (rowId: string, field: string, value: string) => {
+        this.extra().onCellChange?.(rowId, field, value);
+        this.setState({ editing: null });
+    };
+
+    openFilterMenu = (event: ReactMouseEvent<HTMLButtonElement>, field: string) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const rect = event.currentTarget.getBoundingClientRect();
+        this.setState({
+            filterMenu: { field, left: rect.left, top: rect.bottom + 4 },
+            contextMenu: null,
+        });
+    };
+
+    setColumnFilter = (field: string, patch: Partial<ColumnFilter>) => {
+        this.setState((prev) => {
+            const current = prev.columnFilters[field] ?? { comparison: 'contains', value: '' };
+            const nextFilter = { ...current, ...patch };
+            const columnFilters = { ...prev.columnFilters };
+            if (nextFilter.comparison !== 'empty' && nextFilter.comparison !== 'filled' && !nextFilter.value.trim()) {
+                delete columnFilters[field];
+            } else {
+                columnFilters[field] = nextFilter;
+            }
+            this.extra().onColumnFilterChange?.(columnFilters);
+            return { columnFilters };
+        });
+    };
+
+    openContextMenu = (event: ReactMouseEvent, row: DisplayRow, field?: string) => {
+        if (row.kind !== 'leaf') {
+            return;
+        }
+        event.preventDefault();
+        this.setState({
+            contextMenu: { rowId: row.id, field, x: event.clientX, y: event.clientY },
+            filterMenu: null,
+        });
+    };
 
     tableModel() {
         const raw = this.props as unknown as {
@@ -865,11 +1155,64 @@ export class DataTable extends Component<IReactWindowWrapperCombined, DataTableS
         return leaves[leaves.length - 1] ?? null;
     }
 
+    renderFilterMenu(): ReactNode {
+        const menu = this.state.filterMenu;
+        if (!menu) {
+            return null;
+        }
+        const filter = this.state.columnFilters[menu.field] ?? { comparison: 'contains' as FilterComparison, value: '' };
+        return (
+            <div className="data-table__menu" style={{ left: menu.left, top: menu.top }}>
+                <div className="data-table__menu-title">Фильтр</div>
+                <select
+                    value={filter.comparison}
+                    onChange={(event) => this.setColumnFilter(menu.field, { comparison: event.target.value as FilterComparison })}
+                >
+                    <option value="contains">Содержит</option>
+                    <option value="eq">Равно</option>
+                    <option value="filled">Заполнено</option>
+                    <option value="empty">Пусто</option>
+                </select>
+                {filter.comparison !== 'empty' && filter.comparison !== 'filled' && (
+                    <input
+                        autoFocus
+                        value={filter.value}
+                        placeholder="Значение"
+                        onChange={(event) => this.setColumnFilter(menu.field, { value: event.target.value })}
+                    />
+                )}
+                <button type="button" onClick={() => this.setColumnFilter(menu.field, { value: '', comparison: 'contains' })}>
+                    Сбросить
+                </button>
+            </div>
+        );
+    }
+
+    renderContextMenu(rows: DisplayRow[]): ReactNode {
+        const menu = this.state.contextMenu;
+        if (!menu) {
+            return null;
+        }
+        return (
+            <div className="data-table__menu" style={{ left: menu.x, top: menu.y }}>
+                <button type="button" onClick={() => this.startEdit(menu.rowId, menu.field)}>
+                    Изменить
+                </button>
+                <button type="button" onClick={() => this.copyRows([menu.rowId], rows)}>
+                    Копировать
+                </button>
+                <button type="button" onClick={() => this.deleteRows([menu.rowId])}>
+                    Удалить
+                </button>
+            </div>
+        );
+    }
+
     render(): ReactNode {
         const { data, columns } = this.tableModel();
         const rules = (getConditionalFormattingSettingsState().conditionalFormattingRules ?? []) as CfRule[];
         const grouping = data.length > 0 && isTreeRow(data[0]) && Boolean((data[0] as ITreeRow).isGroup);
-        const treeWidth = grouping ? 260 : 32;
+        const treeWidth = (grouping ? 260 : 32) + CHECK_WIDTH;
         const leafHeight = Math.max(36, getConfigCellHeight(columns));
         const built = buildLeaves(columns);
         const sortRules = readSortRules();
@@ -889,8 +1232,11 @@ export class DataTable extends Component<IReactWindowWrapperCombined, DataTableS
         const totalWidth = treeWidth + colWidths.reduce((sum, width) => sum + width, 0);
         const titles = bandTitleByRoot(columns);
 
-        const rows = flattenRows(data, this.state.expandedGroups, rules);
+        const rows = applyColumnFilters(flattenRows(data, this.state.expandedGroups, rules), this.state.columnFilters);
         const paintedRows = rowDrag ? moveRow(rows, rowDrag.fromId, rowDrag.overId) : rows;
+        const leafIds = paintedRows.filter((row) => row.kind === 'leaf').map((row) => row.id);
+        const selectedCount = leafIds.filter((id) => this.state.selectedIds.has(id)).length;
+        const allSelected = leafIds.length > 0 && selectedCount === leafIds.length;
         const heights = paintedRows.map((row) => (row.kind === 'group' ? 42 : leafHeight));
         const geometry = buildRowGeometry(heights);
         const range = firstAndLastRowsToRender(geometry.rows, this.state.scrollTop, this.state.viewportHeight, leafHeight);
@@ -910,10 +1256,36 @@ export class DataTable extends Component<IReactWindowWrapperCombined, DataTableS
 
         return (
             <div className={className}>
+                {selectedCount > 0 && (
+                    <div className="data-table__toolbar">
+                        <span>Выбрано: {selectedCount}</span>
+                        <button type="button" onClick={() => this.copyRows([...this.state.selectedIds], paintedRows)}>
+                            Копировать
+                        </button>
+                        <button type="button" onClick={() => this.deleteRows([...this.state.selectedIds])}>
+                            Удалить
+                        </button>
+                        <button type="button" onClick={() => this.toggleSelectAll([])}>
+                            Снять
+                        </button>
+                    </div>
+                )}
                 <div className="data-table__header" ref={this.headerRef}>
                     {built.hasGroupHeader && (
                         <div className="data-table__header-row" style={{ width: totalWidth, height: 36 }}>
                             <div className="data-table__hcell data-table__pinned" style={{ left: 0, width: treeWidth }}>
+                                <input
+                                    type="checkbox"
+                                    className="data-table__check"
+                                    checked={allSelected}
+                                    ref={(el) => {
+                                        if (el) {
+                                            el.indeterminate = selectedCount > 0 && !allSelected;
+                                        }
+                                    }}
+                                    onChange={() => this.toggleSelectAll(allSelected ? [] : leafIds)}
+                                    onPointerDown={(event) => event.stopPropagation()}
+                                />
                                 {grouping ? 'Группа' : ''}
                             </div>
                             {renderBands(leaves, colWidths, paintedLefts, treeWidth, titles, this.state.drag, this.startColDrag, this.startResize)}
@@ -921,6 +1293,18 @@ export class DataTable extends Component<IReactWindowWrapperCombined, DataTableS
                     )}
                     <div className="data-table__header-row" style={{ width: totalWidth, height: 36 }}>
                         <div className="data-table__hcell data-table__pinned" style={{ left: 0, width: treeWidth }}>
+                            <input
+                                type="checkbox"
+                                className="data-table__check"
+                                checked={allSelected}
+                                ref={(el) => {
+                                    if (el) {
+                                        el.indeterminate = selectedCount > 0 && !allSelected;
+                                    }
+                                }}
+                                onChange={() => this.toggleSelectAll(allSelected ? [] : leafIds)}
+                                onPointerDown={(event) => event.stopPropagation()}
+                            />
                             {grouping ? (built.hasGroupHeader ? '' : 'Группа') : ''}
                         </div>
                         {leaves.map((leaf, index) => {
@@ -936,6 +1320,17 @@ export class DataTable extends Component<IReactWindowWrapperCombined, DataTableS
                                     onPointerDown={(event) => this.startColDrag(event, leaf, built.leaves, colWidths, treeWidth)}
                                 >
                                     <span className="data-table__hlabel">{leaf.kind === 'stack' && built.hasGroupHeader ? '' : leaf.title}</span>
+                                    {field && (
+                                        <button
+                                            type="button"
+                                            className={`data-table__filter-btn${this.state.columnFilters[field] ? ' is-on' : ''}`}
+                                            title="Фильтр"
+                                            onPointerDown={(event) => event.stopPropagation()}
+                                            onClick={(event) => this.openFilterMenu(event, field)}
+                                        >
+                                            ▾
+                                        </button>
+                                    )}
                                     {field && (
                                         <button
                                             type="button"
@@ -959,8 +1354,8 @@ export class DataTable extends Component<IReactWindowWrapperCombined, DataTableS
                     </div>
                 </div>
                 <div className="data-table__scroll" ref={this.scrollerRef}>
-                    {data.length === 0 ? (
-                        <div className="data-table__empty">Нет данных</div>
+                    {data.length === 0 || paintedRows.length === 0 ? (
+                        <div className="data-table__empty">{data.length === 0 ? 'Нет данных' : 'Нет строк по фильтру'}</div>
                     ) : (
                         <div className="data-table__body" style={{ height: geometry.totalHeight, width: totalWidth }}>
                             {dropTop != null && <div className="data-table__drop-line" style={{ transform: `translateY(${dropTop}px)` }} />}
@@ -979,6 +1374,7 @@ export class DataTable extends Component<IReactWindowWrapperCombined, DataTableS
                                             'data-table__row',
                                             row.kind === 'group' ? 'is-group-row' : '',
                                             dragging ? 'is-dragging' : '',
+                                            row.kind === 'leaf' && this.state.selectedIds.has(row.id) ? 'is-selected' : '',
                                         ]
                                             .filter(Boolean)
                                             .join(' ')}
@@ -988,6 +1384,7 @@ export class DataTable extends Component<IReactWindowWrapperCombined, DataTableS
                                             transform: `translateY(${geo.top}px)`,
                                             ...(row.kind === 'group' ? groupStyle : {}),
                                         }}
+                                        onContextMenu={(event) => this.openContextMenu(event, row)}
                                         onClick={() => {
                                             if (row.kind === 'group' && row.groupKey) {
                                                 this.handleToggleGroup(row.groupKey);
@@ -995,6 +1392,15 @@ export class DataTable extends Component<IReactWindowWrapperCombined, DataTableS
                                         }}
                                     >
                                         <div className="data-table__cell data-table__pinned" style={{ left: 0, width: treeWidth, ...(row.kind === 'group' ? groupStyle : {}) }}>
+                                            {row.kind === 'leaf' && (
+                                                <input
+                                                    type="checkbox"
+                                                    className="data-table__check"
+                                                    checked={this.state.selectedIds.has(row.id)}
+                                                    onChange={() => this.toggleRowSelected(row.id)}
+                                                    onClick={(event) => event.stopPropagation()}
+                                                />
+                                            )}
                                             {row.kind === 'leaf' && (
                                                 <button
                                                     type="button"
@@ -1058,6 +1464,7 @@ export class DataTable extends Component<IReactWindowWrapperCombined, DataTableS
                                                 );
                                             }
                                             const painted = cellText(row, leaf.field!, rules);
+                                            const isEditing = this.state.editing?.rowId === row.id && this.state.editing.field === leaf.field;
                                             return (
                                                 <div
                                                     key={leaf.id}
@@ -1067,17 +1474,45 @@ export class DataTable extends Component<IReactWindowWrapperCombined, DataTableS
                                                         width: colWidths[leafIndex],
                                                         ...painted.style,
                                                     }}
+                                                    onContextMenu={(event) => this.openContextMenu(event, row, leaf.field)}
+                                                    onDoubleClick={(event) => {
+                                                        event.stopPropagation();
+                                                        if (leaf.field) {
+                                                            this.startEdit(row.id, leaf.field);
+                                                        }
+                                                    }}
                                                 >
-                                                    <span className="data-table__value">{painted.text}</span>
+                                                    {isEditing ? (
+                                                        <input
+                                                            className="data-table__edit"
+                                                            autoFocus
+                                                            defaultValue={painted.text}
+                                                            onClick={(event) => event.stopPropagation()}
+                                                            onBlur={(event) => this.commitEdit(row.id, leaf.field!, event.target.value)}
+                                                            onKeyDown={(event) => {
+                                                                if (event.key === 'Enter') {
+                                                                    this.commitEdit(row.id, leaf.field!, event.currentTarget.value);
+                                                                }
+                                                                if (event.key === 'Escape') {
+                                                                    this.setState({ editing: null });
+                                                                }
+                                                            }}
+                                                        />
+                                                    ) : (
+                                                        <span className="data-table__value">{painted.text}</span>
+                                                    )}
                                                 </div>
                                             );
                                         })}
                                     </div>
                                 );
                             })}
+                            {this.extra().loadingMore && <div className="data-table__more">Загрузка…</div>}
                         </div>
                     )}
                 </div>
+                {this.state.filterMenu && this.renderFilterMenu()}
+                {this.state.contextMenu && this.renderContextMenu(paintedRows)}
                 {this.state.drag && (
                     <div className="data-table__ghost" style={{ left: this.state.drag.x + 12, top: this.state.drag.y + 12 }}>
                         {this.state.drag.label}

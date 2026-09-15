@@ -1,175 +1,155 @@
-# DataTable — как прикрутить API
+# DataTable — перенос в реальный проект
 
-Скопируйте в проект `DataTable.tsx` и `DataTable.css`. Компонент по-прежнему принимает те же пропсы, что и раньше: `data` и `columns` (`IReactWindowWrapperCombined`). Всё ниже — **необязательные** поля: без них таблица рендерится, но действия не уходят на бэкенд.
+## Что скопировать
 
-Типы колбэков: `ExtraTableProps` (экспорт из `DataTable.tsx`).
+Из этой папки в MDM **только два рабочих файла** (+ этот редми по желанию):
+
+| Файл здесь | Куда в реальном проекте |
+| --- | --- |
+| `DataTable.tsx` | `src/components/MetadataForms/ElementsList/ReactWindowWrapperCombined/DataTable/DataTable.tsx` |
+| `DataTable.css` | рядом, тот же каталог: `DataTable.css` |
+
+**Не переносить** из репозитория `table-data-grid`:
+
+- `template/` — это React-демо, не хост списка
+- импорты не менять: иконки `./Icons/…`, `../../groupTableRows`, `../../types`, `../types`, `helpers/listSettings` должны остаться **как в MDM**
+
+После копирования импорты в шапке `DataTable.tsx` должны совпасть с тем, что уже было в проекте (пути к `listSettings` и `conditionalFormatting/apply`). Если CSS в MDM подключается как модуль — оставьте `import './DataTable.css'` или ваш текущий способ, но **содержимое** файла замените целиком.
+
+Вызов в `renderListTable` **не обязателен менять** для базового рендера:
 
 ```tsx
-import { createRef } from 'react';
-import { DataTable, type ExtraTableProps } from './DataTable';
-
-const tableRef = createRef<DataTable>();
-
-<DataTable
-    ref={tableRef}
-    data={table.data}
-    columns={table.cols as any}
-    {...tableApiProps}
-/>
+<DataTable data={…} columns={table.cols as any} />
 ```
 
-`DataTable` — классовый компонент, `ref` даёт методы `scrollToCell` / `scrollToRow`.
+Новые возможности включаются **дополнительными пропсами** и `ref` (см. ниже). Старый контракт `data` + `columns` сохранён.
 
 ---
 
-## 1. Выделение строк
+## Что перенести из последних правок
 
-Чекбоксы на листьях и в шапке работают сразу (состояние внутри таблицы).
+Полностью замените оба файла, не мержьте кусками: в правках завязаны шапка, скролл, фильтры и меню.
 
-| Проп | Когда | Что сделать в хосте |
-| --- | --- | --- |
-| `onSelectionChange(ids: string[])` | Изменился набор чекбоксов | Запомнить `ids` для массовых действий / кнопки вне таблицы |
+1. **Ячейки в сгруппированных подстроках**  
+   Лист дерева — `{ cells }` без `isGroup`. `getLeafCells` читает `normalizeCells(item.cells)`, иначе под строкой группы пустые ячейки.
 
-`ids` — идентификаторы **листовых** строк (`sourceId` / `row.id` из пайплайна).
+2. **TypeScript под ваш `apply.ts`**  
+   - `groupField` только если это `string`  
+   - `overId` после сужения `kind === 'row'`  
+   - `resolveSubstringAppearance` вызывается с **двумя** аргументами  
 
----
+3. **Выделение и действия**  
+   Чекбоксы, панель «Выбрано», копировать / удалить / снять.
 
-## 2. Фильтр колонки (меню ▾)
+4. **Меню фильтра колонки** (▾)  
+   Локально по уже загруженным строкам. Не заменяет фасет «Отбор».
 
-Локально таблица уже прячет строки (содержит / равно / заполнено / пусто). Это **не** фасет «Отбор» из настроек списка.
+5. **Бесконечный скролл**  
+   `onLoadMore` / `hasMore` / `loadingMore`.
 
-| Проп | Когда | Что сделать |
-| --- | --- | --- |
-| `onColumnFilterChange(filters)` | Пользователь применил или сбросил фильтр | При необходимости продублировать в фасет `selection` или в запрос к API |
+6. **`scrollToCell` / `scrollToRow`**  
+   Через `ref` на класс. Автоскролл при drag строки — без пропсов.
 
-Форма `filters`:
+7. **Контекстное меню** (ПКМ): изменить, копировать, удалить. Двойной клик по ячейке — инлайн-правка.
 
-```ts
-{
-  [field: string]: {
-    comparison: 'contains' | 'eq' | 'empty' | 'filled';
-    value: string;
-  }
-}
-```
+8. **CSS**  
+   Новые классы: `__toolbar`, `__check`, `__filter-btn`, `__menu`, `__edit`, `__more`, `__row.is-selected`. Старый файл стилей без них ломает вёрстку.
 
-Пустые «содержит/равно» из объекта убираются.
+Иконки `groupMarkerDown` / `groupMarkerRight` **не копировать** — они уже лежат в `DataTable/Icons/` у вас.
 
 ---
 
-## 3. Редактирование ячейки
+## Как прикрутить в хосте (MDM)
 
-Двойной клик или пункт контекстного меню «Изменить».
-
-| Проп | Когда | Что сделать |
-| --- | --- | --- |
-| `onEditRow(rowId, field?)` | Начало правки | Открыть форму / зафиксировать аналитику |
-| `onCellChange(rowId, field, value)` | Enter или blur инпута | `PATCH`/`PUT` записи, затем обновить `data` |
-
-Без `onCellChange` значение в инпуте не попадёт в модель хоста.
-
----
-
-## 4. Удаление и копирование
-
-Панель над таблицей (если есть выбранные) и контекстное меню (ПКМ по листу).
-
-| Проп | Когда | Что сделать |
-| --- | --- | --- |
-| `onDeleteRows(ids)` | Удалить выбранные или одну строку из меню | Вызвать API удаления, выкинуть строки из `data` |
-| `onCopyRows(ids)` | Копировать | По желанию свой буфер / API. Иначе таблица сама пишет TSV в `navigator.clipboard` |
-
-Без `onDeleteRows` чекбоксы сбросятся, строки на экране останутся, пока хост не обновит `data`.
-
----
-
-## 5. Бесконечный скролл
-
-Когда скролл почти у низа (`~96px`), вызывается `onLoadMore`.
-
-| Проп | Смысл |
-| --- | --- |
-| `onLoadMore()` | Догрузить следующую страницу и **добавить** строки в `data` (не подменять весь массив, если пагинация накопительная) |
-| `hasMore={false}` | Больше не вызывать `onLoadMore` |
-| `loadingMore={true}` | Показать «Загрузка…», не слать повторный запрос |
-
-```ts
-onLoadMore = () => {
-    if (this.state.loading) return;
-    this.setState({ loading: true });
-    fetchPage(this.state.offset).then((chunk) => {
-        this.setState({
-            rows: [...this.state.rows, ...chunk.rows],
-            offset: this.state.offset + chunk.rows.length,
-            loading: false,
-            hasMore: chunk.rows.length > 0,
-        });
-    });
-};
-```
-
-В `DataTable` передайте уже собранный `data` после `toDataTableViewModel` / своего адаптера.
-
----
-
-## 6. Скролл к ячейке и автоскролл
-
-Автоскролл при **перетаскивании строки** к краю вьюпорта включён всегда.
-
-Программный скролл (после загрузки / из поиска):
-
-```ts
-tableRef.current?.scrollToRow('entity-id');
-tableRef.current?.scrollToCell('entity-id', 'name');
-```
-
-- `rowId` — тот же id, что у листа в `data`
-- `field` — `IColumnData.name` / `cell.columnName`; без него скроллится только вертикаль
-- Группы временно раскрываются (`expandedGroups = 'all'`), чтобы строка была в раскладке
-
----
-
-## 7. Сортировка, колонки, порядок строк
-
-Уже были в таблице; к API так:
-
-| Проп | Событие |
-| --- | --- |
-| `onSort({ column, direction })` | Клик по стрелкам; `direction` = `'ASC' \| 'DESC' \| null` (сброс) |
-| `onSortRulesChange(rules)` | Полный список правил фасета `sort` |
-| `onColumnMove(fromIndex, toIndex)` | Перестановка корневых колонок |
-| `onColumnResize(columnName, width)` | Ресайз |
-| `onRowMove(fromId, toId)` | Drag строки |
-
-Сортировка также пытается писать в `helpers/listSettings` (`getSortSettingsState` / `replaceSortSettingsState`), если они есть. Если фасета нет — достаточно `onSort` / `onSortRulesChange`.
-
----
-
-## Минимальный пример хоста
+`DataTable` — class component:
 
 ```tsx
-type HostState = { data: ICell[][] | ITreeRow[]; selected: string[]; hasMore: boolean; loadingMore: boolean };
+private tableRef = createRef<DataTable>();
 
 <DataTable
     ref={this.tableRef}
-    data={this.state.data}
-    columns={this.props.columns}
+    data={view.data}
+    columns={table.cols as any}
     hasMore={this.state.hasMore}
     loadingMore={this.state.loadingMore}
-    onSelectionChange={(ids) => this.setState({ selected: ids })}
+    onSelectionChange={(ids) => this.setState({ selectedIds: ids })}
     onCellChange={(id, field, value) => this.patchRow(id, field, value)}
     onDeleteRows={(ids) => this.deleteRows(ids)}
     onCopyRows={(ids) => this.logCopy(ids)}
+    onEditRow={(id, field) => this.onStartEdit(id, field)}
+    onColumnFilterChange={(filters) => this.onTableFilters(filters)}
     onLoadMore={() => this.fetchNextPage()}
     onSort={({ column, direction }) => this.setQuerySort(column, direction)}
-    onColumnFilterChange={(filters) => this.setQueryFilters(filters)}
+    onRowMove={(fromId, toId) => this.reorderRows(fromId, toId)}
+    onColumnMove={(from, to) => this.reorderColumns(from, to)}
+    onColumnResize={(name, width) => this.saveColumnWidth(name, width)}
 />
+
+this.tableRef.current?.scrollToRow(id);
+this.tableRef.current?.scrollToCell(id, 'name');
 ```
 
-После `patch`/`delete`/`fetch` передайте новый `data` — таблица перерисуется сама.
+Тип колбэков: `ExtraTableProps` из `DataTable.tsx`. Все поля **необязательные**.
+
+Пайплайн списка не трогать: отбор, группировка, группировка колонок, СФ по-прежнему **до** таблицы / СФ из стора в `render`.
 
 ---
 
-## Что не нужно передавать
+## API колбэков
 
-Условное оформление по-прежнему читается из стора списка в `render` (`getConditionalFormattingSettingsState`). Отбор, группировка строк и группировка колонок по-прежнему готовятся **до** `DataTable` в пайплайне списка.
+### Выделение
+
+| Проп | Когда | Хост |
+| --- | --- | --- |
+| `onSelectionChange(ids: string[])` | Чекбоксы | Сохранить id листьев |
+
+### Фильтр колонки (▾)
+
+Локально строки уже фильтруются. Чтобы ушло в запрос:
+
+| Проп | Когда |
+| --- | --- |
+| `onColumnFilterChange(filters)` | Смена / сброс фильтра |
+
+```ts
+{ [field: string]: { comparison: 'contains' | 'eq' | 'empty' | 'filled'; value: string } }
+```
+
+### Правка, удаление, копирование
+
+| Проп | Когда | Хост |
+| --- | --- | --- |
+| `onEditRow(rowId, field?)` | Старт правки | Опционально |
+| `onCellChange(rowId, field, value)` | Enter / blur | `PATCH`, затем новый `data` |
+| `onDeleteRows(ids)` | Панель или меню | API удаления + убрать из `data` |
+| `onCopyRows(ids)` | Копировать | Свой буфер; иначе таблица пишет TSV в clipboard |
+
+Без `onDeleteRows` строки с экрана сами не исчезнут.
+
+### Бесконечный скролл
+
+~96px до низа → `onLoadMore`, если не `hasMore === false` и не `loadingMore`.
+
+Догруженные строки **добавляйте** в уже прогнанный через адаптер `data`.
+
+### Скролл
+
+- Drag к краю — автоскролл всегда  
+- `scrollToRow(id)` / `scrollToCell(id, field?)` — `field` = `column.name`; группы раскрываются
+
+### Сортировка и колонки
+
+| Проп | Событие |
+| --- | --- |
+| `onSort({ column, direction })` | Стрелки; `null` = сброс |
+| `onSortRulesChange(rules)` | Весь фасет `sort` |
+| `onColumnMove` / `onColumnResize` / `onRowMove` | DnD и ресайз |
+
+Если в MDM есть `getSortSettingsState` / `replaceSortSettingsState`, сортировка ещё пишется в стор.
+
+---
+
+## Что не передавать в таблицу
+
+- Правила СФ — из `getConditionalFormattingSettingsState` в `render`  
+- Отбор, группировка строк, дерево колонок — как сейчас, **до** `<DataTable />`
